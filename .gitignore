@@ -10,3 +10,7 @@ infra/iam-policy.json
 **/target/
 storefront/dist/
 storefront/node_modules/
+*.pem
+user-data.sh
+launch-shopflow-instance.sh
+instance-info.txt
