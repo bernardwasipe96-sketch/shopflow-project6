@@ -1,0 +1,472 @@
+---
+# Source: shopflow/templates/networkpolicy.yaml
+# Network security: by default no pod can talk to another. Then we open
+# only the exact paths the system needs. Anything not listed is blocked.
+
+# 1. Default deny all incoming traffic to every pod in this namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  labels:
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Source: shopflow/templates/networkpolicy.yaml
+# 2. Storefront may receive traffic from the load balancer.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-storefront-ingress
+spec:
+  podSelector:
+    matchLabels: { app: storefront }
+  policyTypes: [Ingress]
+  ingress:
+    - {} # from the ALB (in this simple Phase 2 setup, allow into the storefront)
+---
+# Source: shopflow/templates/networkpolicy.yaml
+# 3. Catalog may be called only by Orders and Storefront.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-catalog-from-orders-and-storefront
+spec:
+  podSelector:
+    matchLabels: { app: catalog-service }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: orders-service } }
+        - podSelector: { matchLabels: { app: storefront } }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# Source: shopflow/templates/networkpolicy.yaml
+# 4. Orders may be called only by the Storefront.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-orders-from-storefront
+spec:
+  podSelector:
+    matchLabels: { app: orders-service }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: storefront } }
+      ports:
+        - { protocol: TCP, port: 8080 }
+
+---
+# Source: shopflow/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shopflow
+  labels:
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+  annotations:
+    # This binding is what lets the pods assume the IAM role (IRSA),
+    # so they reach SQS and Secrets Manager with no static credentials.
+    eks.amazonaws.com/role-arn: arn:aws:iam::540361297327:role/eksctl-shopflow-addon-iamserviceaccount-defau-Role1-TWO4eEyYmiAL
+---
+# Source: shopflow/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shopflow-config
+  labels:
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+data:
+  SPRING_DATASOURCE_URL: "jdbc:postgresql://shopflow-db.c23ics8kuucv.us-east-1.rds.amazonaws.com:5432/shopflow"
+  ORDER_EVENTS_QUEUE_NAME: "shopflow-order-events"
+  AWS_REGION: "us-east-1"
+
+---
+# Source: shopflow/templates/catalog.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-service
+  labels: { app: catalog-service }
+spec:
+  selector: { app: catalog-service }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+
+---
+# Source: shopflow/templates/notifications.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: notifications-service
+  labels: { app: notifications-service }
+spec:
+  selector: { app: notifications-service }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+
+---
+# Source: shopflow/templates/orders.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-service
+  labels: { app: orders-service }
+spec:
+  selector: { app: orders-service }
+  ports:
+    - { name: http, port: 8080, targetPort: 8080 }
+
+---
+# Source: shopflow/templates/storefront.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: storefront
+  labels: { app: storefront }
+spec:
+  selector: { app: storefront }
+  ports:
+    - { name: http, port: 80, targetPort: 8080 }
+
+---
+# Source: shopflow/templates/catalog.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-service
+  labels:
+    app: catalog-service
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: catalog-service
+  template:
+    metadata:
+      labels:
+        app: catalog-service
+    spec:
+      serviceAccountName: shopflow
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: catalog-service
+          image: 540361297327.dkr.ecr.us-east-1.amazonaws.com/shopflow-catalog:latest
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: SPRING_DATASOURCE_URL
+              valueFrom: { configMapKeyRef: { name: shopflow-config, key: SPRING_DATASOURCE_URL } }
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom: { secretKeyRef: { name: shopflow-db, key: username } }
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom: { secretKeyRef: { name: shopflow-db, key: password } }
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "768Mi" }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Source: shopflow/templates/notifications.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notifications-service
+  labels:
+    app: notifications-service
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notifications-service
+  template:
+    metadata:
+      labels:
+        app: notifications-service
+    spec:
+      serviceAccountName: shopflow
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: notifications-service
+          image: 540361297327.dkr.ecr.us-east-1.amazonaws.com/shopflow-notifications:latest
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: ORDER_EVENTS_QUEUE_NAME
+              valueFrom: { configMapKeyRef: { name: shopflow-config, key: ORDER_EVENTS_QUEUE_NAME } }
+            - name: AWS_REGION
+              valueFrom: { configMapKeyRef: { name: shopflow-config, key: AWS_REGION } }
+          resources:
+            requests: { cpu: "200m", memory: "384Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Source: shopflow/templates/orders.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-service
+  labels:
+    app: orders-service
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: orders-service
+  template:
+    metadata:
+      labels:
+        app: orders-service
+    spec:
+      serviceAccountName: shopflow
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: orders-service
+          image: 540361297327.dkr.ecr.us-east-1.amazonaws.com/shopflow-orders:latest
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: SPRING_DATASOURCE_URL
+              valueFrom: { configMapKeyRef: { name: shopflow-config, key: SPRING_DATASOURCE_URL } }
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom: { secretKeyRef: { name: shopflow-db, key: username } }
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom: { secretKeyRef: { name: shopflow-db, key: password } }
+            - name: CATALOG_URL
+              value: "http://catalog-service:8080"
+            - name: ORDER_EVENTS_QUEUE_NAME
+              valueFrom: { configMapKeyRef: { name: shopflow-config, key: ORDER_EVENTS_QUEUE_NAME } }
+            - name: AWS_REGION
+              valueFrom: { configMapKeyRef: { name: shopflow-config, key: AWS_REGION } }
+          resources:
+            requests: { cpu: "250m", memory: "512Mi" }
+            limits:   { cpu: "1",    memory: "768Mi" }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Source: shopflow/templates/storefront.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront
+  labels:
+    app: storefront
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: storefront
+  template:
+    metadata:
+      labels:
+        app: storefront
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101   # the nginx unprivileged user
+      containers:
+        - name: storefront
+          image: 540361297327.dkr.ecr.us-east-1.amazonaws.com/shopflow-storefront:latest
+          ports:
+            - containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits:   { cpu: "250m", memory: "128Mi" }
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+# Source: shopflow/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: catalog-service
+  labels:
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: catalog-service
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Source: shopflow/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notifications-service
+  labels:
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: notifications-service
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Source: shopflow/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orders-service
+  labels:
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orders-service
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Source: shopflow/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: storefront
+  labels:
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: storefront
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# Source: shopflow/templates/servicemonitor.yaml
+# Tells Prometheus (from the kube-prometheus-stack) to scrape the Spring Boot
+# services at /actuator/prometheus. Requires the Prometheus Operator CRDs,
+# which the monitoring stack installs (see platform/monitoring/SETUP.md).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: shopflow-services
+  labels:
+    release: kube-prometheus-stack   # so the stack's Prometheus picks it up
+    app.kubernetes.io/part-of: shopflow
+    app.kubernetes.io/managed-by: helm
+spec:
+  namespaceSelector:
+    matchNames: ["default"]
+  selector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["catalog-service", "orders-service", "notifications-service"]
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 30s

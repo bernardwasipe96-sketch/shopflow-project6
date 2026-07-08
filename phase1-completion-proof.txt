@@ -1,0 +1,28 @@
+cluster_name = "shopflow"
+ecr_repository_urls = {
+  "catalog" = "540361297327.dkr.ecr.us-east-1.amazonaws.com/shopflow-catalog"
+  "notifications" = "540361297327.dkr.ecr.us-east-1.amazonaws.com/shopflow-notifications"
+  "orders" = "540361297327.dkr.ecr.us-east-1.amazonaws.com/shopflow-orders"
+  "storefront" = "540361297327.dkr.ecr.us-east-1.amazonaws.com/shopflow-storefront"
+}
+order_events_queue_name = "shopflow-order-events"
+order_events_queue_url = "https://sqs.us-east-1.amazonaws.com/540361297327/shopflow-order-events"
+rds_database_name = "shopflow"
+rds_endpoint = "shopflow-db.c23ics8kuucv.us-east-1.rds.amazonaws.com:5432"
+region = "us-east-1"
+NAME                                     READY   STATUS    RESTARTS   AGE
+catalog-service-7f6d9fbf76-hhkhj         1/1     Running   0          35m
+catalog-service-7f6d9fbf76-r2plx         1/1     Running   0          35m
+notifications-service-75476f75f6-9xnpt   1/1     Running   0          35m
+orders-service-5bf87fbbbc-h9cwj          1/1     Running   0          35m
+orders-service-5bf87fbbbc-r9bhk          1/1     Running   0          35m
+storefront-7549dc89d5-t8v6x              1/1     Running   0          35m
+storefront-7549dc89d5-xvmcz              1/1     Running   0          35m
+NAME                        STATUS   ROLES    AGE   VERSION
+ip-10-0-1-41.ec2.internal   Ready    <none>   56m   v1.30.14-eks-7d6f6ec
+ip-10-0-2-38.ec2.internal   Ready    <none>   56m   v1.30.14-eks-7d6f6ec
+NAME                    READY   UP-TO-DATE   AVAILABLE   AGE
+catalog-service         2/2     2            2           36m
+notifications-service   1/1     1            1           36m
+orders-service          2/2     2            2           36m
+storefront              2/2     2            2           36m
